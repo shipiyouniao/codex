@@ -28,6 +28,7 @@ use crate::codex_thread::TryStartTurnIfIdleRejectionReason;
 use crate::config::Config;
 use crate::context::ContextualUserFragment;
 use crate::session::TurnInput;
+use crate::session::error_excludes_turn_from_model_context;
 use crate::session::session::Session;
 use crate::session::turn::run_hooks_and_record_inputs;
 use crate::session::turn_context::TurnContext;
@@ -785,11 +786,17 @@ impl Session {
                 turn_id: turn_context.sub_id.clone(),
                 profile,
             });
+        let terminal_error = if abort_reason.is_none() {
+            turn_context.terminal_error.lock().await.clone()
+        } else {
+            None
+        };
+        let exclude_turn_from_model_context = terminal_error
+            .as_ref()
+            .is_some_and(error_excludes_turn_from_model_context);
         let idle_cause = if matches!(abort_reason.as_ref(), Some(TurnAbortReason::Interrupted)) {
             ThreadIdleCause::Interrupted
-        } else if task_ended_before_persistence
-            || (abort_reason.is_none() && turn_context.terminal_error.lock().await.is_some())
-        {
+        } else if task_ended_before_persistence || terminal_error.is_some() {
             ThreadIdleCause::Failed
         } else {
             ThreadIdleCause::Completed
@@ -809,26 +816,18 @@ impl Session {
                 .turn_timing_state
                 .time_to_first_token_ms()
                 .await;
-            let error = turn_context.terminal_error.lock().await.clone();
             self.emit_turn_stop_lifecycle(turn_context.extension_data.as_ref())
                 .await;
             EventMsg::TurnComplete(TurnCompleteEvent {
                 turn_id: turn_context.sub_id.clone(),
                 last_agent_message,
-                error,
+                error: terminal_error,
                 started_at,
                 completed_at,
                 duration_ms,
                 time_to_first_token_ms,
             })
         };
-        self.send_event(turn_context.as_ref(), event).await;
-        self.services
-            .guardian_rejection_circuit_breaker
-            .lock()
-            .await
-            .clear_turn(&turn_context.sub_id);
-
         let cleared_active_turn = {
             let mut active = self.active_turn.lock().await;
             if let Some(active_turn) = active.as_ref()
@@ -841,6 +840,16 @@ impl Session {
                 false
             }
         };
+        if cleared_active_turn && exclude_turn_from_model_context {
+            self.exclude_turn_from_model_context(turn_context.as_ref())
+                .await;
+        }
+        self.send_event(turn_context.as_ref(), event).await;
+        self.services
+            .guardian_rejection_circuit_breaker
+            .lock()
+            .await
+            .clear_turn(&turn_context.sub_id);
         if cleared_active_turn {
             self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
         }

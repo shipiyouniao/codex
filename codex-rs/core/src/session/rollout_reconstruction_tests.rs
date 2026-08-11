@@ -8,7 +8,10 @@ use codex_history::ResumedHistory;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::SessionContextWindow;
 use codex_protocol::protocol::SessionMeta;
@@ -40,6 +43,28 @@ fn assistant_message(text: &str) -> ResponseItem {
         }],
         phase: None,
         internal_chat_message_metadata_passthrough: None,
+    }
+}
+
+fn message_for_turn(role: &str, text: &str, turn_id: &str) -> ResponseItem {
+    let content = if role == "user" {
+        ContentItem::InputText {
+            text: text.to_string(),
+        }
+    } else {
+        ContentItem::OutputText {
+            text: text.to_string(),
+        }
+    };
+    ResponseItem::Message {
+        id: None,
+        role: role.to_string(),
+        content: vec![content],
+        phase: None,
+        internal_chat_message_metadata_passthrough: Some(InternalChatMessageMetadataPassthrough {
+            turn_id: Some(turn_id.to_string()),
+            ..Default::default()
+        }),
     }
 }
 
@@ -431,6 +456,68 @@ async fn reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_com
         serde_json::to_value(reconstructed.world_state_baseline)
             .expect("serialize reconstructed world state"),
         json!({"test": {"environment": "first"}})
+    );
+}
+
+#[tokio::test]
+async fn reconstruct_history_excludes_legacy_rejected_turn_without_hiding_it_from_rollout() {
+    let (session, turn_context) = make_session_and_context().await;
+    let first_context_item = turn_context.to_turn_context_item();
+    let first_turn_id = first_context_item
+        .turn_id
+        .clone()
+        .expect("turn context should have turn_id");
+    let rejected_turn_id = "rejected-turn";
+    let first_user = message_for_turn("user", "first user", &first_turn_id);
+    let first_assistant = message_for_turn("assistant", "first assistant", &first_turn_id);
+    let rejected_user = message_for_turn("user", "rejected user", rejected_turn_id);
+    let rejected_tool_output = message_for_turn("assistant", "partial output", rejected_turn_id);
+
+    let mut rejected_context_item = first_context_item.clone();
+    rejected_context_item.turn_id = Some(rejected_turn_id.to_string());
+    rejected_context_item.model = "rejected-model".to_string();
+
+    let mut rollout_items = completed_user_turn_rollout(
+        first_context_item.clone(),
+        vec![
+            RolloutItem::ResponseItem(first_user.clone()),
+            RolloutItem::ResponseItem(first_assistant.clone()),
+        ],
+    );
+    let mut rejected_items = completed_user_turn_rollout(
+        rejected_context_item,
+        vec![
+            RolloutItem::ResponseItem(rejected_user),
+            RolloutItem::ResponseItem(rejected_tool_output),
+        ],
+    );
+    let RolloutItem::EventMsg(EventMsg::TurnComplete(rejected_complete)) =
+        rejected_items.last_mut().expect("rejected turn completion")
+    else {
+        unreachable!();
+    };
+    rejected_complete.error = Some(ErrorEvent {
+        message: "Request blocked.".to_string(),
+        codex_error_info: Some(CodexErrorInfo::Other),
+    });
+    rollout_items.extend(rejected_items);
+
+    let reconstructed = session
+        .reconstruct_history_from_rollout(&turn_context, &rollout_items)
+        .await;
+
+    assert_eq!(reconstructed.history, vec![first_user, first_assistant]);
+    assert_eq!(
+        reconstructed.previous_turn_settings,
+        Some(PreviousTurnSettings {
+            model: turn_context.model_info.slug.clone(),
+            comp_hash: None,
+            realtime_active: Some(turn_context.realtime_active),
+        })
+    );
+    assert_eq!(
+        reconstructed.reference_context_item,
+        Some(first_context_item)
     );
 }
 

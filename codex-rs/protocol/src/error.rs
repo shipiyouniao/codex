@@ -443,7 +443,9 @@ impl CodexErr {
             | CodexErrorDetails::InternalAgentDied => CodexErrorInfo::InternalServerError,
             CodexErrorDetails::UnsupportedOperation(_)
             | CodexErrorDetails::ThreadNotFound(_)
-            | CodexErrorDetails::AgentLimitReached { .. } => CodexErrorInfo::BadRequest,
+            | CodexErrorDetails::AgentLimitReached { .. }
+            | CodexErrorDetails::InvalidRequest(_)
+            | CodexErrorDetails::InvalidImageRequest() => CodexErrorInfo::BadRequest,
             CodexErrorDetails::Sandbox(_) => CodexErrorInfo::SandboxError,
             _ => CodexErrorInfo::Other,
         }

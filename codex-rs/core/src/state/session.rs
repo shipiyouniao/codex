@@ -115,6 +115,14 @@ impl SessionState {
         self.history.clone()
     }
 
+    pub(crate) fn drop_turn_from_history(&mut self, turn_id: &str) -> bool {
+        let dropped = self.history.drop_turn(turn_id);
+        if dropped {
+            self.auto_compact_window.clear_prefill();
+        }
+        dropped
+    }
+
     pub(crate) fn replace_history(
         &mut self,
         items: Vec<ResponseItem>,

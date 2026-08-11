@@ -46,6 +46,7 @@ enum TurnReferenceContextItem {
 struct ActiveReplaySegment<'a> {
     turn_id: Option<String>,
     counts_as_user_turn: bool,
+    exclude_from_model_context: bool,
     previous_turn_settings: Option<PreviousTurnSettings>,
     reference_context_item: TurnReferenceContextItem,
     world_state_replay: Vec<&'a RolloutItem>,
@@ -67,6 +68,10 @@ fn finalize_active_segment<'a>(
     window: &mut Option<ReconstructedWindow>,
     pending_rollback_turns: &mut usize,
 ) {
+    if active_segment.exclude_from_model_context {
+        return;
+    }
+
     // Thread rollback drops the newest surviving real user-message boundaries. In replay, that
     // means skipping the next finalized segments that contain a non-contextual
     // `EventMsg::UserMessage`.
@@ -197,6 +202,10 @@ impl Session {
                     if active_segment.turn_id.is_none() {
                         active_segment.turn_id = Some(event.turn_id.clone());
                     }
+                    active_segment.exclude_from_model_context = event
+                        .error
+                        .as_ref()
+                        .is_some_and(error_excludes_turn_from_model_context);
                 }
                 RolloutItem::EventMsg(EventMsg::TurnAborted(event)) => {
                     if let Some(active_segment) = active_segment.as_mut() {
@@ -364,6 +373,14 @@ impl Session {
                 }
                 RolloutItem::EventMsg(EventMsg::ThreadRolledBack(rollback)) => {
                     history.drop_last_n_user_turns(rollback.num_turns);
+                }
+                RolloutItem::EventMsg(EventMsg::TurnComplete(event))
+                    if event
+                        .error
+                        .as_ref()
+                        .is_some_and(error_excludes_turn_from_model_context) =>
+                {
+                    history.drop_turn(&event.turn_id);
                 }
                 RolloutItem::EventMsg(_)
                 | RolloutItem::TurnContext(_)

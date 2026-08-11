@@ -174,6 +174,12 @@ fn server_overloaded_maps_to_protocol() {
 }
 
 #[test]
+fn invalid_model_request_maps_to_bad_request() {
+    let err = CodexErr::InvalidRequest("Request blocked.".to_string());
+    assert_eq!(err.to_codex_protocol_error(), CodexErrorInfo::BadRequest);
+}
+
+#[test]
 fn sandbox_denied_uses_aggregated_output_when_stderr_empty() {
     let output = ExecToolCallOutput {
         exit_code: 77,

@@ -273,6 +273,27 @@ impl ContextManager {
         self.replace(retained_items);
     }
 
+    /// Removes the model-visible suffix belonging to `turn_id`.
+    ///
+    /// Turn items are stamped before they are recorded, so the first matching item is the
+    /// transactional boundary for that turn. This keeps rejected turns in the persisted rollout
+    /// while preventing their user input, tool output, and partial model output from poisoning the
+    /// next model request.
+    pub(crate) fn drop_turn(&mut self, turn_id: &str) -> bool {
+        let Some(cut_idx) = self
+            .items
+            .iter()
+            .position(|item| item.turn_id() == Some(turn_id))
+        else {
+            return false;
+        };
+
+        let retained_items = self.items[..cut_idx].to_vec();
+        self.replace(retained_items);
+        self.reference_context_item = None;
+        true
+    }
+
     pub(crate) fn update_token_info(
         &mut self,
         usage: &TokenUsage,

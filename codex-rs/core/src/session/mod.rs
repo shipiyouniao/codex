@@ -179,6 +179,16 @@ use tracing::instrument;
 use tracing::warn;
 use uuid::Uuid;
 
+pub(crate) fn error_excludes_turn_from_model_context(error: &ErrorEvent) -> bool {
+    // Older rollouts recorded `invalid_prompt` failures as `Other`, so retain the exact server
+    // message check below to repair those sessions when they are resumed.
+    matches!(
+        error.codex_error_info.as_ref(),
+        Some(CodexErrorInfo::BadRequest | CodexErrorInfo::CyberPolicy)
+    ) || (error.codex_error_info.as_ref() == Some(&CodexErrorInfo::Other)
+        && error.message == "Request blocked.")
+}
+
 use crate::client::ModelClient;
 use crate::codex_thread::ThreadConfigSnapshot;
 #[cfg(test)]
@@ -3679,6 +3689,17 @@ impl Session {
     pub(crate) async fn clone_history(&self) -> ContextManager {
         let state = self.state.lock().await;
         state.clone_history()
+    }
+
+    pub(crate) async fn exclude_turn_from_model_context(&self, turn_context: &TurnContext) {
+        let dropped = self
+            .state
+            .lock()
+            .await
+            .drop_turn_from_history(&turn_context.sub_id);
+        if dropped {
+            self.recompute_token_usage(turn_context).await;
+        }
     }
 
     pub(crate) async fn current_window_id(&self) -> String {
